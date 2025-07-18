@@ -4,7 +4,7 @@ use std::sync::Arc;
 use bevy::ecs::resource::Resource;
 use bevy::utils::default;
 use parking_lot::RwLock;
-use steamworks::{ChatEntryType, FriendFlags, GameLobbyJoinRequested, LobbyChatMsg, LobbyChatUpdate, LobbyCreated, LobbyEnter, LobbyType, P2PSessionRequest, SResult, SendType};
+use steamworks::{CallbackHandle, ChatEntryType, FriendFlags, GameLobbyJoinRequested, LobbyChatMsg, LobbyChatUpdate, LobbyCreated, LobbyEnter, LobbyType, P2PSessionRequest, SResult, SendType};
 use crate::prelude::{OnLobbyExit, OnLobbyJoin};
 use crate::util::Receiver;
 use crate::backends::{ChatKind, CurrentLobby, IBackendEvents, LobbyErrorKind, LobbyState, LobbyVisibility, LobbyConnectError, OnLobbyMessage};
@@ -29,6 +29,13 @@ pub struct Backend {
 
     /// Event receivers
     events: BackendEvents,
+
+    lobby_create_cb: CallbackHandle,
+    lobby_enter_cb: CallbackHandle,
+    lobby_msg_cb: CallbackHandle,
+    lobby_change_cb: CallbackHandle,
+    lobby_accept_cb: CallbackHandle,
+    lobby_autojoin_cb: CallbackHandle,
 }
 
 impl Backend {
@@ -47,7 +54,7 @@ impl Backend {
         // Lobby create event callback
         let lobby2 = lobby.clone();
         let tx = events.on_lobby_error.tx();
-        client.register_callback(move |ev: LobbyCreated| {
+        let lobby_create_cb = client.register_callback(move |ev: LobbyCreated| {
             log::info!("LobbyCreated event received from Steamworks API");
 
             let id = ev.lobby;
@@ -70,7 +77,7 @@ impl Backend {
         let err_tx = events.on_lobby_error.tx();
         let lobby2 = lobby.clone();
         let client2 = client.clone();
-        client.register_callback(move |ev: LobbyEnter| {
+        let lobby_enter_cb = client.register_callback(move |ev: LobbyEnter| {
             log::info!("LobbyEnter event received from Steamworks API");
 
             match LobbyErrorKind::try_from(ev.chat_room_enter_response) {
@@ -106,7 +113,7 @@ impl Backend {
         // lobby message event callback
         let tx = events.on_lobby_msg.tx();
         let client2 = client.clone();
-        client.register_callback(move |ev: LobbyChatMsg| {
+        let lobby_msg_cb = client.register_callback(move |ev: LobbyChatMsg| {
             log::debug!("LobbyChatMsg event received from Steamworks API");
 
             // get the content by querying its chatid
@@ -130,7 +137,7 @@ impl Backend {
 
         // lobby change event
         let tx = events.on_lobby_change.tx();
-        client.register_callback(move |ev: LobbyChatUpdate| {
+        let lobby_change_cb = client.register_callback(move |ev: LobbyChatUpdate| {
             log::debug!("LobbyChatUpdate event received from Steamworks API");
 
             if let Err(_) = tx.try_send(ev) {
@@ -140,7 +147,7 @@ impl Backend {
 
         // auto-accept all connection requests.
         let client2 = client.clone();
-        client.register_callback(move |ev: P2PSessionRequest| {
+        let lobby_accept_cb = client.register_callback(move |ev: P2PSessionRequest| {
             log::debug!("Accepted P2P Session Request from UserID: '{:?}'", ev.remote);
             client2.networking().accept_p2p_session(ev.remote);
         });
@@ -150,7 +157,7 @@ impl Backend {
         let client2 = client.clone();
         let lobby2 = lobby.clone();
         let exit_tx = events.on_lobby_exit.tx();
-        client.register_callback(move |ev: GameLobbyJoinRequested| {
+        let lobby_autojoin_cb = client.register_callback(move |ev: GameLobbyJoinRequested| {
             log::debug!("GameLobbyJoinRequested event received from Steamworks API");
 
             let mut lobby = lobby2.write();
@@ -179,7 +186,13 @@ impl Backend {
             raw: client,
             lobby,
             members: Vec::new(),
-            events
+            events,
+            lobby_create_cb,
+            lobby_enter_cb,
+            lobby_msg_cb,
+            lobby_change_cb,
+            lobby_accept_cb,
+            lobby_autojoin_cb,
         }
     }
 }
