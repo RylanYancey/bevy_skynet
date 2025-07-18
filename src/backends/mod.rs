@@ -198,10 +198,10 @@ pub fn recv_incoming_packets(
     
     let registry = context.messages.clone();
     while let Some((user_id, len)) = backend.recv_packet(&mut buf) {
-        if len < 8 {
+        if len <= 8 {
             log::warn!("P2P Backend Received a packet that was too small and was discarded (len: '{}')", buf.len());
         } else {
-            let msg_id = u64::from_le_bytes([buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]]);
+            let msg_id = u64::from_be_bytes([buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]]);
             registry.send(msg_id, &buf[8..], user_id);
         }
     }

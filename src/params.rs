@@ -57,11 +57,9 @@ where
 {
     fn write_buffer(&mut self, message: &T) {
         self.buf.clear();
-        for byte in self.tx.message.id.to_le_bytes() {
-            self.buf.push(byte);
-        }
-        let cursor = io::Cursor::new(&mut*self.buf);
-        ciborium::into_writer(message, cursor).unwrap();
+        let msg_id = self.tx.message.id.to_be_bytes();
+        self.buf.extend_from_slice(&msg_id);
+        ciborium::into_writer(message, &mut*self.buf).unwrap();
     }
 
     /// Broadcast a message to all connected users. 
