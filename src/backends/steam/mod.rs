@@ -2,10 +2,12 @@
 use std::sync::Arc;
 
 use bevy::ecs::resource::Resource;
+use bevy::utils::default;
 use parking_lot::RwLock;
-use steamworks::{ChatEntryType, FriendFlags, LobbyChatMsg, LobbyChatUpdate, LobbyCreated, LobbyEnter, LobbyType, P2PSessionRequest, SResult, SendType};
+use steamworks::{ChatEntryType, FriendFlags, GameLobbyJoinRequested, LobbyChatMsg, LobbyChatUpdate, LobbyCreated, LobbyEnter, LobbyType, P2PSessionRequest, SResult, SendType};
+use crate::prelude::{OnLobbyExit, OnLobbyJoin};
 use crate::util::Receiver;
-use crate::backends::{ChatKind, IBackendEvents, LobbyState, LobbyVisibility, OnLobbyCreate, OnLobbyMessage};
+use crate::backends::{ChatKind, CurrentLobby, IBackendEvents, LobbyErrorKind, LobbyState, LobbyVisibility, LobbyConnectError, OnLobbyMessage};
 use bevy::log;
 
 pub mod friends;
@@ -16,9 +18,16 @@ pub type LobbyId = steamworks::LobbyId;
 
 #[derive(Resource)]
 pub struct Backend {
+    /// Raw handle to steamworks client.
     raw: steamworks::Client,
-    lobby: Arc<RwLock<LobbyState>>,
+
+    /// Lobby state and type information
+    lobby: Arc<RwLock<LobbyData>>,
+
+    /// Re-computed each tick so we don't have to call lobby_members() on each broadcasting send.
     members: Vec<UserId>,
+
+    /// Event receivers
     events: BackendEvents,
 }
 
@@ -32,21 +41,58 @@ impl Backend {
             }
         };
 
-        let lobby = Arc::new(RwLock::new(LobbyState::None));
+        let lobby = Arc::new(RwLock::new(LobbyData::default()));
         let events = BackendEvents::new(channel_size);
 
         // Lobby create event callback
-        let tx = events.on_lobby_create.tx();
+        let lobby2 = lobby.clone();
+        let tx = events.on_lobby_error.tx();
         client.register_callback(move |ev: LobbyCreated| {
-            tx.blocking_send(ev).expect("[E559] (steam event channel disconnected)")
+            let id = ev.lobby;
+            // check if this is an error code 
+            if let Ok(kind) = LobbyErrorKind::try_from(ev) {
+                // creation failed, lobby state is now None. 
+                lobby2.write().state = LobbyState::None;
+
+                // Dispatch the error for processing. 
+                if let Err(_) = tx.try_send(LobbyConnectError { id, kind }) {
+                    log::warn!("[E559] A LobbyError was received, but its event receiver is full.")
+                }
+            }
         });
 
         // lobby join event callback
-        let tx = events.on_lobby_join.tx();
+        let join_tx = events.on_lobby_join.tx();
+        let err_tx = events.on_lobby_error.tx();
         let lobby2 = lobby.clone();
+        let client2 = client.clone();
         client.register_callback(move |ev: LobbyEnter| {
-            *lobby2.write() = LobbyState::InLobby(ev.lobby);
-            tx.blocking_send(ev).expect("[E560] (steam event channel disconnected)")
+            match LobbyErrorKind::try_from(ev.chat_room_enter_response) {
+                // LobbyError occured while joining
+                Ok(kind) => {
+                    // kick from join queue
+                    lobby2.write().state = LobbyState::None;
+
+                    // send error event
+                    if let Err(_) = err_tx.try_send(LobbyConnectError { id: ev.lobby, kind }) {
+                        log::error!("[E558] A LobbyError was received, but its event receiver is full.");
+                    }
+                }
+                // No error, join was successful
+                Err(_) => {
+                    // send error event
+                    if let Err(_) = join_tx.try_send(OnLobbyJoin { id: ev.lobby }) {
+                        log::error!("[E557] A LobbyError was received, but its event receiver is full.");
+                    }
+                    // update lobby state
+                    let mut lobby = lobby2.write();
+                    lobby.state = LobbyState::InLobby;
+                    lobby.curr.id = ev.lobby;
+                    lobby.curr.invite_code = base62::encode(ev.lobby.raw());
+                    lobby.curr.max_members = client2.matchmaking().lobby_member_limit(ev.lobby).unwrap_or(4) as u32;
+                    lobby.curr.others = client2.matchmaking().lobby_members(ev.lobby);
+                }
+            }
         });
 
         // lobby message event callback
@@ -56,26 +102,63 @@ impl Backend {
             // get the content by querying its chatid
             let mut buf = Vec::new();
             client2.matchmaking().get_lobby_chat_entry(ev.lobby, ev.chat_id, &mut buf);
-            // send the fully constructed message as UTF-8. 
-            tx.blocking_send(
-                OnLobbyMessage {
-                    content: String::from_utf8(buf).unwrap_or_else(|_| "Not Valid UTF8".into()),
-                    user: ev.user,
-                    kind: convert_chat_entry_type(ev.chat_entry_type),
-                }
-            ).expect("[E561] (steam event channel disconnected)");
+
+            // Extract the content and check if it's valid UTF-8. 
+            let content = String::from_utf8(buf).unwrap_or_else(|_| {
+                log::warn!("Received a Chat Message from Steam that was not valid UTF-8.");
+                "!! ERROR !! Not Valid UTF-8".into()
+            });
+
+            // get the type of message
+            let kind = convert_chat_entry_type(ev.chat_entry_type);
+
+            // send the event
+            if let Err(_) = tx.try_send(OnLobbyMessage { content, user: ev.user, kind }) {
+                log::error!("[E557] A LobbyMessage was received, but its event receiver is full.");
+            }
         });
 
         // lobby change event
         let tx = events.on_lobby_change.tx();
         client.register_callback(move |ev: LobbyChatUpdate| {
-            tx.blocking_send(ev).expect("[E562] (steam event channel disconnected)")
+            if let Err(_) = tx.try_send(ev) {
+                log::error!("[E556] A LobbyChange was received, but its event receiver is full.");
+            }
         });
 
         // auto-accept all connection requests.
         let client2 = client.clone();
         client.register_callback(move |ev: P2PSessionRequest| {
+            log::trace!("Accepted P2P Session Request from UserID: '{:?}'", ev.remote);
             client2.networking().accept_p2p_session(ev.remote);
+        });
+
+        // Auto accept attempts by the user to join a lobby by clicking "Join Game" or "Accept Invite"
+        // within the steam menu. 
+        let client2 = client.clone();
+        let lobby2 = lobby.clone();
+        let exit_tx = events.on_lobby_exit.tx();
+        client.register_callback(move |ev: GameLobbyJoinRequested| {
+            let mut lobby = lobby2.write();
+            // do nothing if we are already joining 
+            if lobby.state != LobbyState::Joining {
+                // send lobby exit event if already in lobby
+                if lobby.state == LobbyState::InLobby {
+                    client2.matchmaking().leave_lobby(lobby.curr.id);
+                    if let Err(_) = exit_tx.try_send(OnLobbyExit { id: lobby.curr.id }) {
+                        log::error!("[E555] A LobbyExit occurred, but its event receiver was full.")
+                    }
+                }
+
+                // send lobby join request
+                client2.matchmaking().join_lobby(ev.lobby_steam_id, move |_| {});
+                lobby.state = LobbyState::Joining;
+                lobby.curr = CurrentLobby {
+                    id: ev.lobby_steam_id,
+                    is_host: false,
+                    ..default()
+                };
+            }
         });
 
         Self {
@@ -113,7 +196,14 @@ impl super::IBackend for Backend {
     }
 
     fn lobby_state(&self) -> LobbyState {
-        self.lobby.read().clone()
+        self.lobby.read().state.clone()
+    }
+
+    fn current_lobby(&self) -> Option<CurrentLobby> {
+        self.lobby.read().get_if_in_lobby().map(|mut curr| {
+            curr.others = self.lobby_members();
+            curr
+        })
     }
 
     fn create_lobby(
@@ -121,26 +211,29 @@ impl super::IBackend for Backend {
         vis: LobbyVisibility, 
         max_members: u32,
     ) -> bool {
-        {
-            let mut state = self.lobby.write();
-            if *state != LobbyState::None {
-                return false;
-            }
-            *state = LobbyState::Creating;
-        }   
-
-        let ty = match vis {
-            LobbyVisibility::Anyone => LobbyType::Public,
-            LobbyVisibility::FriendsOnly => LobbyType::FriendsOnly,
-            LobbyVisibility::InviteOnly => LobbyType::Private,
+        let data = CurrentLobby {
+            vis,
+            max_members,
+            is_host: true,
+            ..default()
         };
-        self.raw.matchmaking().create_lobby(ty, max_members, log_cb);
-        true
+
+        if let Some(_) = self.lobby.write().set_joining_if_none(data) {
+            let ty = match vis {
+                LobbyVisibility::Anyone => LobbyType::Public,
+                LobbyVisibility::FriendsOnly => LobbyType::FriendsOnly,
+                LobbyVisibility::InviteOnly => LobbyType::Private,
+            };
+            self.raw.matchmaking().create_lobby(ty, max_members, log_cb);
+            true
+        } else {
+            false
+        }
     }
 
     fn encode_lobby_id(&self) -> Option<String> {
-        if let LobbyState::InLobby(id) = *self.lobby.read() {
-            Some(base62::encode(id.raw()))
+        if let Some(curr) = self.lobby.read().get_if_in_lobby() {
+            Some(base62::encode(curr.id.raw()))
         } else {
             None
         }
@@ -157,23 +250,25 @@ impl super::IBackend for Backend {
     }
 
     fn join_lobby(&self, lobby: LobbyId) -> bool {
-        {
-            let mut state = self.lobby.write();
-            if *state != LobbyState::None {
-                return false;
-            }
-            *state = LobbyState::Joining;
+        let data = CurrentLobby {
+            id: lobby,
+            is_host: false,
+            ..default()
+        };
+
+        if let Some(_) = self.lobby.write().set_joining_if_none(data) {
+            self.raw.matchmaking().join_lobby(lobby, move |_| {});
+            true
+        } else {
+            false
         }
-        self.raw.matchmaking().join_lobby(lobby, move |_| {});
-        true
     }
 
     fn exit_lobby(&self) -> bool {
-        let mut state = self.lobby.write();
-        if let LobbyState::InLobby(id) = *state {
-            *state = LobbyState::None;
-            self.events.on_lobby_exit.send(id);
-            self.raw.matchmaking().leave_lobby(id);
+        if let Some(curr) = self.lobby.read().get_if_in_lobby() {
+            self.events.on_lobby_exit.send(OnLobbyExit { id: curr.id });
+            self.raw.matchmaking().leave_lobby(curr.id);
+            self.lobby.write().state = LobbyState::None;
             true
         } else {
             false
@@ -181,16 +276,21 @@ impl super::IBackend for Backend {
     }
 
     fn lobby_members(&self) -> Vec<UserId> {
-        if let LobbyState::InLobby(id) = *self.lobby.read() {
-            self.raw.matchmaking().lobby_members(id)
+        if let Some(curr) = self.lobby.read().get_if_in_lobby() {
+            let mut members = self.raw.matchmaking().lobby_members(curr.id);
+            let user = self.user_id();
+            if let Some(i) = members.iter().position(|id| user == *id) {
+                members.remove(i);
+            }
+            members
         } else {
             Vec::new()
         }
     }
 
     fn send_lobby_message(&self, msg: &str) {
-        if let LobbyState::InLobby(id) = *self.lobby.read() {
-            if let Err(e) = self.raw.matchmaking().send_lobby_chat_message(id, msg.as_bytes()) {
+        if let Some(curr) = self.lobby.read().get_if_in_lobby() {
+            if let Err(e) = self.raw.matchmaking().send_lobby_chat_message(curr.id, msg.as_bytes()) {
                 log::error!("Attempted to send a lobby chat message, but steam returned an error: '{e}'");
             }
         }
@@ -215,7 +315,7 @@ impl super::IBackend for Backend {
     }
 
     fn tick(&mut self) {
-        if let LobbyState::InLobby(id) = *self.lobby.read() {
+        if let Some(_) = self.lobby.read().get_if_in_lobby() {
             self.members = self.lobby_members();
         } else {
             self.members.clear();
@@ -224,74 +324,41 @@ impl super::IBackend for Backend {
 }
 
 pub struct BackendEvents {
-    /// A response to backend.create_lobby 
-    on_lobby_create: Receiver<LobbyCreated>,
-
     /// A response to backend.join_lobby
-    on_lobby_join: Receiver<LobbyEnter>,
+    on_lobby_join: Receiver<OnLobbyJoin>,
 
     /// Occurs when backend.exit_lobby is called.
-    on_lobby_exit: Receiver<LobbyId>,
+    on_lobby_exit: Receiver<OnLobbyExit>,
 
     /// Occurs when a lobby message is received. 
     on_lobby_msg: Receiver<OnLobbyMessage>,
 
     /// Occurs when the member list changes.
     on_lobby_change: Receiver<LobbyChatUpdate>,
+
+    /// Errors that can occur when joining or creating. 
+    on_lobby_error: Receiver<LobbyConnectError>,
 }
 
 impl BackendEvents {
     fn new(size: usize) -> Self {
         Self {
-            on_lobby_create: Receiver::new(size),
             on_lobby_join: Receiver::new(size),
             on_lobby_exit: Receiver::new(size),
             on_lobby_msg: Receiver::new(size),
             on_lobby_change: Receiver::new(size),
+            on_lobby_error: Receiver::new(size),
         }
     }
 }
 
 impl IBackendEvents for BackendEvents {
-    fn read_lobby_create(&mut self) -> impl Iterator<Item=super::OnLobbyCreate> {
-        use super::OnLobbyCreate::*;
-        self.on_lobby_create.iter().map(|ev| {
-            match ev.result {
-                2 => Failed,
-                16 => TimedOut,
-                25 => LimitExceeded,
-                15 => AccessDenied,
-                3 => Offline,
-                1 => Success(ev.lobby),
-                _ => unreachable!("[E304] Unexpected error code from lobby create: '{}'", ev.result),
-            }
-        })
-    }
-
     fn read_lobby_join(&mut self) -> impl Iterator<Item=super::OnLobbyJoin> {
-        use steamworks::ChatRoomEnterResponse::*;
-        use super::OnLobbyJoin;
-        self.on_lobby_join.iter().map(|ev| {
-            match ev.chat_room_enter_response {
-                Success => OnLobbyJoin::Success(ev.lobby),
-                DoesntExist => OnLobbyJoin::DoesntExist,
-                NotAllowed => OnLobbyJoin::NotAllowed,
-                Full => OnLobbyJoin::Full,
-                Error => OnLobbyJoin::Error,
-                Banned => OnLobbyJoin::Banned,
-                // ?? what does limited mean
-                Limited => OnLobbyJoin::Error,
-                ClanDisabled => OnLobbyJoin::ClanDisabled,
-                CommunityBan => OnLobbyJoin::CommunityBan,
-                MemberBlockedYou => OnLobbyJoin::MemberBlockedYou,
-                YouBlockedMember => OnLobbyJoin::YouBlockedMember,
-                RatelimitExceeded => OnLobbyJoin::RatelimitExceeded,
-            }
-        })
+        self.on_lobby_join.iter()
     }
 
     fn read_lobby_exit(&mut self) -> impl Iterator<Item=super::OnLobbyExit> {
-        self.on_lobby_exit.iter().map(|lobby| super::OnLobbyExit { lobby })
+        self.on_lobby_exit.iter()
     }
 
     fn read_lobby_msg(&mut self) -> impl Iterator<Item=OnLobbyMessage> {
@@ -317,6 +384,10 @@ impl IBackendEvents for BackendEvents {
             }
         })
     }
+
+    fn read_lobby_connect_errors(&mut self) -> impl Iterator<Item=LobbyConnectError> {
+        self.on_lobby_error.iter()
+    }
 }
 
 fn log_cb<T>(res: SResult<T>) {
@@ -339,5 +410,42 @@ fn convert_chat_entry_type(entry: ChatEntryType) -> ChatKind {
         ChatEntryType::Disconnected => ChatKind::Disconnected,
         ChatEntryType::HistoricalChat => ChatKind::HistoricalChat,
         ChatEntryType::LinkBlocked => ChatKind::LinkBlocked,
+    }
+}
+
+#[derive(Clone)]
+struct LobbyData {
+    state: LobbyState,
+    curr: CurrentLobby,
+}
+
+impl Default for LobbyData {
+    fn default() -> Self {
+        Self {
+            state: LobbyState::None,
+            curr: CurrentLobby::default()
+        }
+    }
+}
+
+impl LobbyData {
+    fn set_joining_if_none(
+        &mut self, 
+        data: CurrentLobby,
+    ) -> Option<Self> {
+        if self.state == LobbyState::None {
+            self.curr = data;
+            Some(self.clone())
+        } else {
+            None
+        }
+    }
+
+    fn get_if_in_lobby(&self) -> Option<CurrentLobby> {
+        if self.state == LobbyState::InLobby {
+            Some(self.curr.clone())
+        } else {
+            None
+        }
     }
 }

@@ -42,6 +42,9 @@ pub trait IBackend: Resource {
     /// Get the current state of the lobby.
     fn lobby_state(&self) -> LobbyState;
 
+    /// Get information about the lobby the user is in, if they are in one at all.
+    fn current_lobby(&self) -> Option<CurrentLobby>;
+
     /// Send a lobby create request. When a response is
     /// received, a OnLobbyCreate event will be dispatched.
     /// 
@@ -69,7 +72,7 @@ pub trait IBackend: Resource {
     /// If the user is not already connected to a lobby, "false" is returned.
     fn exit_lobby(&self) -> bool;
 
-    /// Get the ids of other members in the lobby.
+    /// Get the ids of other members in the lobby, not including this user. 
     fn lobby_members(&self) -> Vec<UserId>;
 
     /// Send a message to other players in the lobby.
@@ -113,9 +116,6 @@ pub trait IFriend {
 /// Interface for consuming events produced by the backend. 
 /// This is not intended to be read directly by the user. 
 pub trait IBackendEvents {
-    /// Read the OnLobbyCreate events
-    fn read_lobby_create(&mut self) -> impl Iterator<Item=OnLobbyCreate>;
-
     /// Read the OnLobbyJoin events
     fn read_lobby_join(&mut self) -> impl Iterator<Item=OnLobbyJoin>;
 
@@ -125,30 +125,59 @@ pub trait IBackendEvents {
     /// Read the OnLobbyMsg events
     fn read_lobby_msg(&mut self) -> impl Iterator<Item=OnLobbyMessage>;
 
-    /// Read the lobby message events
+    /// Read the lobby change events
     fn read_lobby_change(&mut self) -> impl Iterator<Item=OnLobbyChange>;
+
+    /// Read lobby connection errors
+    fn read_lobby_connect_errors(&mut self) -> impl Iterator<Item=LobbyConnectError>;
 }
 
 /// Convert steamwork events to bevy events
 pub fn read_backend_events(
     curr_state: Res<State<LobbyState>>,
+    curr_lobby: Option<ResMut<CurrentLobby>>,
+    curr_is_host: Res<State<IsLobbyHost>>,
+    mut next_is_host: ResMut<NextState<IsLobbyHost>>,
     mut next_state: ResMut<NextState<LobbyState>>,
     mut backend: ResMut<Backend>,
-    mut on_lobby_create: EventWriter<OnLobbyCreate>,
     mut on_lobby_join: EventWriter<OnLobbyJoin>,
     mut on_lobby_exit: EventWriter<OnLobbyExit>,
     mut on_lobby_msg: EventWriter<OnLobbyMessage>,
     mut on_lobby_change: EventWriter<OnLobbyChange>,
+    mut on_lobby_connect_err: EventWriter<LobbyConnectError>,
+    mut commands: Commands,
 ) {
-    on_lobby_create.write_batch(backend.events().read_lobby_create());
     on_lobby_join.write_batch(backend.events().read_lobby_join());
     on_lobby_exit.write_batch(backend.events().read_lobby_exit());
     on_lobby_msg.write_batch(backend.events().read_lobby_msg());
     on_lobby_change.write_batch(backend.events().read_lobby_change());
+    on_lobby_connect_err.write_batch(backend.events().read_lobby_connect_errors());
 
-    let curr = backend.lobby_state();
-    if curr != *curr_state.get() {
-        next_state.set(curr)
+    let actual = backend.lobby_state();
+    if actual != *curr_state.get() {
+        next_state.set(actual);
+
+        if let Some(data) = backend.current_lobby() {
+            commands.insert_resource(data);
+        } else {
+            commands.remove_resource::<CurrentLobby>();
+        }
+    } 
+
+    let is_host = if let Some(mut curr_lobby) = curr_lobby {
+        // update current lobby members
+        curr_lobby.others = backend.lobby_members();
+        if curr_lobby.is_host {
+            IsLobbyHost::True
+        } else {
+            IsLobbyHost::False
+        }
+    } else {
+        IsLobbyHost::False
+    };
+
+    if is_host != *curr_is_host.get() {
+        next_is_host.set(is_host);
     }
 }
 

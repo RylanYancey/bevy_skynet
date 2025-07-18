@@ -39,7 +39,7 @@ where
     }
 }
 
-/// Transmitter for network messages of a given type.
+/// Transmitter for network messages of a type.
 /// Supports broadcasting and sending to individuals. 
 #[derive(SystemParam)]
 pub struct NetSender<'w, 's, T> 

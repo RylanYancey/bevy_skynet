@@ -3,21 +3,25 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tokio::sync::mpsc;
 use xxhash_rust::const_xxh64::xxh64;
 use bevy::{log, prelude::*};
-use crate::{backends::{Backend, IBackend}, comms::{IncomingRx, OutgoingTx}, context::{Message, MessageType, NetContext}};
+use crate::{comms::{IncomingRx, OutgoingTx}, context::{Message, MessageType, NetContext}};
 
 pub mod prelude {
+    pub type Client = crate::backends::Backend;
+
     pub use crate::{
-        params::{NetReceiver, NetSender},
         SkynetAppExt,
         SkynetConfig,
         SkynetPlugin,
+        params::{NetReceiver, NetSender},
         backends::{
             Backend,
             OnLobbyChange,
-            OnLobbyCreate,
             OnLobbyJoin,
             OnLobbyExit,
+            LobbyConnectError,
             OnLobbyMessage,
+            LobbyErrorKind,
+            IsLobbyHost,
             LobbyVisibility,
             LobbyState,
             ChatKind,
@@ -42,7 +46,7 @@ impl Plugin for SkynetPlugin {
     fn build(&self, app: &mut App) {
         use backends::*;
         let config = SkynetConfig::load_or_default();
-
+    
         // Steamworks expects a steam_appid.txt to load, so we generate one from the config when in debug mode. 
         #[cfg(feature = "steam")]
         if cfg!(debug_assertions) {
@@ -53,13 +57,14 @@ impl Plugin for SkynetPlugin {
         app
             .insert_resource(Backend::from_config(&config))
             .insert_resource(NetContext::new(config))
-            .add_event::<OnLobbyCreate>()
             .add_event::<OnLobbyJoin>()
             .add_event::<OnLobbyExit>()
             .add_event::<OnLobbyChange>()
             .add_event::<OnLobbyMessage>()
             .add_event::<OnLobbyChange>()
+            .add_event::<LobbyConnectError>()
             .init_state::<LobbyState>()
+            .init_state::<IsLobbyHost>()
             .add_systems(
                 Last, (
                     backends::tick_backend,
@@ -87,7 +92,6 @@ impl SkynetAppExt for App {
         self.add_systems(PreStartup,
             move |ctx: Res<NetContext>, mut commands: Commands| {
                 let (tx, rx) = mpsc::channel::<Message<T>>(ctx.config.general.channel_size as usize);
-                commands.insert_resource(IncomingRx { rx, });
                 let name = T::type_path();
                 let msg = Arc::new(
                     MessageType {
@@ -96,8 +100,9 @@ impl SkynetAppExt for App {
                         tx: Box::new(comms::IncomingTx { tx })
                     }
                 );
-                commands.insert_resource(OutgoingTx::<T> { message: msg.clone(), _marker: PhantomData });
-                ctx.messages.insert(msg);
+                ctx.messages.insert(msg.clone());
+                commands.insert_resource(OutgoingTx::<T> { message: msg, _marker: PhantomData });
+                commands.insert_resource(IncomingRx { rx, });
             }
         )
     }
