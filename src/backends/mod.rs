@@ -190,9 +190,13 @@ pub fn read_backend_events(
 pub fn recv_incoming_packets(
     context: Res<NetContext>,
     backend: Res<Backend>,
+    mut buf: Local<Vec<u8>>,
 ) {
+    if buf.len() < 1200 {
+        buf.resize(1200, 0);
+    }
+    
     let registry = context.messages.clone();
-    let mut buf = Vec::with_capacity(1200);
     while let Some((user_id, len)) = backend.recv_packet(&mut buf) {
         if len < 8 {
             log::warn!("P2P Backend Received a packet that was too small and was discarded (len: '{}')", buf.len());
