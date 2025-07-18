@@ -1,12 +1,13 @@
 
 use super::*;
 
-#[derive(States, Clone, Eq, PartialEq, Debug, Hash)]
+#[derive(States, Clone, Eq, PartialEq, Debug, Hash, Default)]
 pub enum LobbyState {
     /// The user is actively in a lobby.
     InLobby(LobbyId),
 
     /// The user is not in a lobby and is not attempting to create or join one.
+    #[default]
     None,
 
     /// A request to create a lobby has been sent by this user. 

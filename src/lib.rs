@@ -5,6 +5,31 @@ use xxhash_rust::const_xxh64::xxh64;
 use bevy::{log, prelude::*};
 use crate::{backends::{Backend, IBackend}, comms::{IncomingRx, OutgoingTx}, context::{Message, MessageType, NetContext}};
 
+pub mod prelude {
+    pub use crate::{
+        params::{NetReceiver, NetSender},
+        SkynetAppExt,
+        SkynetConfig,
+        SkynetPlugin,
+        backends::{
+            Backend,
+            OnLobbyChange,
+            OnLobbyCreate,
+            OnLobbyJoin,
+            OnLobbyExit,
+            OnLobbyMessage,
+            LobbyVisibility,
+            LobbyState,
+            ChatKind,
+            IBackend,
+            IFriend,
+            Friend,
+            LobbyId,
+            UserId,
+        }
+    };
+}
+
 pub mod backends;
 pub mod context;
 pub mod params;
@@ -34,6 +59,14 @@ impl Plugin for SkynetPlugin {
             .add_event::<OnLobbyChange>()
             .add_event::<OnLobbyMessage>()
             .add_event::<OnLobbyChange>()
+            .init_state::<LobbyState>()
+            .add_systems(
+                Last, (
+                    backends::tick_backend,
+                    backends::read_backend_events,
+                    backends::recv_incoming_packets
+                )
+            )
         ;
     }
 }

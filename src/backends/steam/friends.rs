@@ -1,4 +1,3 @@
-use steamworks::FriendFlags;
 
 use crate::backends::IFriend;
 
