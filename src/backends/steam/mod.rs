@@ -334,6 +334,8 @@ impl super::IBackend for Backend {
     }
 
     fn tick(&mut self) {
+        self.raw.run_callbacks();
+
         if let Some(_) = self.lobby.read().get_if_in_lobby() {
             self.members = self.lobby_members();
         } else {

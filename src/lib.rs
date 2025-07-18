@@ -67,9 +67,9 @@ impl Plugin for SkynetPlugin {
             .init_state::<IsLobbyHost>()
             .add_systems(
                 Last, (
-                    backends::tick_backend,
                     backends::read_backend_events,
                     backends::recv_incoming_packets
+                        .after(backends::read_backend_events)
                 )
             )
         ;

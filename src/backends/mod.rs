@@ -150,6 +150,8 @@ pub fn read_backend_events(
     mut on_lobby_connect_err: EventWriter<LobbyConnectError>,
     mut commands: Commands,
 ) {
+    backend.tick();
+
     on_lobby_join.write_batch(backend.events().read_lobby_join());
     on_lobby_exit.write_batch(backend.events().read_lobby_exit());
     on_lobby_msg.write_batch(backend.events().read_lobby_msg());
@@ -200,9 +202,4 @@ pub fn recv_incoming_packets(
         }
         buf.clear();
     }
-}
-
-/// Execute the backend's tick 
-pub fn tick_backend(mut backend: ResMut<Backend>) {
-    backend.tick();
 }
