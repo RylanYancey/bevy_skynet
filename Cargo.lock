@@ -1087,6 +1087,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "bevy_skynet"
+version = "0.1.0"
+dependencies = [
+ "base62",
+ "bevy",
+ "ciborium",
+ "parking_lot",
+ "serde",
+ "steamworks",
+ "tokio",
+ "toml",
+ "xxhash-rust",
+]
+
+[[package]]
 name = "bevy_sprite"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2883,21 +2898,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee6cda3051665f1fb8d9e08fc35c96d5a244fb1be711a03b71118828afc9a873"
 dependencies = [
  "jni-sys",
-]
-
-[[package]]
-name = "netcast"
-version = "0.1.0"
-dependencies = [
- "base62",
- "bevy",
- "ciborium",
- "parking_lot",
- "serde",
- "steamworks",
- "tokio",
- "toml",
- "xxhash-rust",
 ]
 
 [[package]]
