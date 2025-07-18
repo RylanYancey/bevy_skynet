@@ -204,6 +204,5 @@ pub fn recv_incoming_packets(
             let msg_id = u64::from_le_bytes([buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]]);
             registry.send(msg_id, &buf[8..], user_id);
         }
-        buf.clear();
     }
 }
