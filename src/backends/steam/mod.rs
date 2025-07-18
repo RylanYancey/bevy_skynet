@@ -440,6 +440,7 @@ impl LobbyData {
     ) -> Option<Self> {
         if self.state == LobbyState::None {
             self.curr = data;
+            self.state = LobbyState::None;
             Some(self.clone())
         } else {
             None
