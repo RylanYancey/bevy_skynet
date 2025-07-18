@@ -48,7 +48,7 @@ impl Backend {
         let lobby2 = lobby.clone();
         let tx = events.on_lobby_error.tx();
         client.register_callback(move |ev: LobbyCreated| {
-            log::debug!("LobbyCreated event received from Steamworks API");
+            log::info!("LobbyCreated event received from Steamworks API");
 
             let id = ev.lobby;
             // check if this is an error code 
@@ -71,12 +71,12 @@ impl Backend {
         let lobby2 = lobby.clone();
         let client2 = client.clone();
         client.register_callback(move |ev: LobbyEnter| {
-            log::debug!("LobbyEnter event received from Steamworks API");
+            log::info!("LobbyEnter event received from Steamworks API");
 
             match LobbyErrorKind::try_from(ev.chat_room_enter_response) {
                 // LobbyError occured while joining
                 Ok(kind) => {
-                    log::debug!("An error occurred while joining lobby. (kind: '{kind}')");
+                    log::warn!("An error occurred while joining lobby. (kind: '{kind}')");
 
                     // kick from join queue
                     lobby2.write().state = LobbyState::None;
