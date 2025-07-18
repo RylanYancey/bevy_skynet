@@ -1,0 +1,6 @@
+
+[general]
+channel_size = 64 # optional
+
+[steamworks]
+app_id = 480 # steamworks sandbox id
