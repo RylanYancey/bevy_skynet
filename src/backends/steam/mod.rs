@@ -183,6 +183,11 @@ impl super::IBackend for Backend {
         self.raw.friends().name()
     }
 
+    fn name_of(&self, user: UserId) -> String {
+        let friend = self.raw.friends().get_friend(user);
+        friend.nick_name().unwrap_or_else(|| friend.name())
+    }
+
     fn preferred_ui_language(&self) -> Option<String> {
         Some(self.raw.utils().ui_language())
     }

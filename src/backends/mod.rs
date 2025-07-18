@@ -33,6 +33,9 @@ pub trait IBackend: Resource {
     /// The name of the User. 
     fn user_name(&self) -> String;
 
+    /// The name of some user. May be used to get names of other members in lobbies.
+    fn name_of(&self, user: UserId) -> String;
+
     /// The user's configured UI language.
     fn preferred_ui_language(&self) -> Option<String>;
 
