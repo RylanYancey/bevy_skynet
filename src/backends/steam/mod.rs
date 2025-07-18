@@ -48,9 +48,13 @@ impl Backend {
         let lobby2 = lobby.clone();
         let tx = events.on_lobby_error.tx();
         client.register_callback(move |ev: LobbyCreated| {
+            log::debug!("LobbyCreated event received from Steamworks API");
+
             let id = ev.lobby;
             // check if this is an error code 
             if let Ok(kind) = LobbyErrorKind::try_from(ev) {
+                log::debug!("An error occurred during lobby creation. (kind: '{kind}')");
+
                 // creation failed, lobby state is now None. 
                 lobby2.write().state = LobbyState::None;
 
@@ -67,9 +71,13 @@ impl Backend {
         let lobby2 = lobby.clone();
         let client2 = client.clone();
         client.register_callback(move |ev: LobbyEnter| {
+            log::debug!("LobbyEnter event received from Steamworks API");
+
             match LobbyErrorKind::try_from(ev.chat_room_enter_response) {
                 // LobbyError occured while joining
                 Ok(kind) => {
+                    log::debug!("An error occurred while joining lobby. (kind: '{kind}')");
+
                     // kick from join queue
                     lobby2.write().state = LobbyState::None;
 
@@ -99,6 +107,8 @@ impl Backend {
         let tx = events.on_lobby_msg.tx();
         let client2 = client.clone();
         client.register_callback(move |ev: LobbyChatMsg| {
+            log::debug!("LobbyChatMsg event received from Steamworks API");
+
             // get the content by querying its chatid
             let mut buf = Vec::new();
             client2.matchmaking().get_lobby_chat_entry(ev.lobby, ev.chat_id, &mut buf);
@@ -121,6 +131,8 @@ impl Backend {
         // lobby change event
         let tx = events.on_lobby_change.tx();
         client.register_callback(move |ev: LobbyChatUpdate| {
+            log::debug!("LobbyChatUpdate event received from Steamworks API");
+
             if let Err(_) = tx.try_send(ev) {
                 log::error!("[E556] A LobbyChange was received, but its event receiver is full.");
             }
@@ -129,7 +141,7 @@ impl Backend {
         // auto-accept all connection requests.
         let client2 = client.clone();
         client.register_callback(move |ev: P2PSessionRequest| {
-            log::trace!("Accepted P2P Session Request from UserID: '{:?}'", ev.remote);
+            log::debug!("Accepted P2P Session Request from UserID: '{:?}'", ev.remote);
             client2.networking().accept_p2p_session(ev.remote);
         });
 
@@ -139,6 +151,8 @@ impl Backend {
         let lobby2 = lobby.clone();
         let exit_tx = events.on_lobby_exit.tx();
         client.register_callback(move |ev: GameLobbyJoinRequested| {
+            log::debug!("GameLobbyJoinRequested event received from Steamworks API");
+
             let mut lobby = lobby2.write();
             // do nothing if we are already joining 
             if lobby.state != LobbyState::Joining {
