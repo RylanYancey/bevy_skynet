@@ -3,6 +3,7 @@ use std::{io, marker::PhantomData, sync::Arc};
 use serde::de::DeserializeOwned;
 use bevy::prelude::*;
 use crate::{backends::UserId, context::{Message, MessageType}};
+use bevy::log;
 
 type CborError = ciborium::de::Error<io::Error>;
 
@@ -21,12 +22,14 @@ pub(crate) trait DynamicTx: Send + Sync {
 
 impl<T> DynamicTx for IncomingTx<T>
 where
-    T: DeserializeOwned + Send + Sync
+    T: DeserializeOwned + Send + Sync + TypePath
 {
     fn send(&self, payload: &[u8], sender: UserId) -> Result<(), CborError> {
         let cursor = io::Cursor::new(payload);
         let payload: T = ciborium::from_reader(cursor)?;
-        let _ = self.tx.blocking_send(Message { sender, payload });
+        if let Err(_) = self.tx.try_send(Message { sender, payload }) {
+            log::error!("The message receiver channel for message '{}' is full.", T::type_path())
+        }
         Ok(())
     }
 }

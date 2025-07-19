@@ -1,4 +1,5 @@
 
+use bevy::log;
 use tokio::sync::mpsc;
 
 pub struct Receiver<T> {
@@ -13,12 +14,8 @@ impl<T> Receiver<T> {
     }
 
     pub fn send(&self, item: T) {
-        let _ = self.tx.blocking_send(item);
-    }
-
-    pub fn send_expect(&self, item: T, err: &str) {
-        if let Err(_) = self.tx.blocking_send(item) {
-            panic!("Failed to send an item to a receiver with error: '{err}'")
+        if let Err(_) = self.tx.try_send(item) {
+            log::error!("A Receiver somewhere was full.'")
         }
     }
 
